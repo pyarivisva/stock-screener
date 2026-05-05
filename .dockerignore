@@ -1,0 +1,19 @@
+# Jangan ikut ke build konteks Docker
+.venv
+venv
+__pycache__
+*.py[cod]
+*$py.class
+.git
+.gitignore
+.cursor
+*.md
+.env
+.pytest_cache
+.mypy_cache
+.ruff_cache
+htmlcov
+.coverage
+dist
+build
+*.egg-info

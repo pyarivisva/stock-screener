@@ -1,0 +1,126 @@
+# Stack penuh: DB, cache, GUI DB, API, Celery, Streamlit (PRD §7.2 & Phase 8)
+x-app-image: &app-image
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: stock-screener-app:latest
+  env_file:
+    - .env
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: stock_screener_timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  redis:
+    image: redis:7
+    container_name: stock_screener_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: stock_screener_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - timescaledb
+
+  api:
+    <<: *app-image
+    container_name: stock_screener_api
+    restart: unless-stopped
+    command: uvicorn backend.api.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      # Timpa DATABASE_URL dari .env host (localhost/127.0.0.1 tidak valid di dalam container).
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      POSTGRES_HOST: timescaledb
+      POSTGRES_PORT: "5432"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_CACHE_URL: redis://redis:6379/0
+    depends_on:
+      - timescaledb
+      - redis
+
+  worker:
+    <<: *app-image
+    container_name: stock_screener_worker
+    restart: unless-stopped
+    command: celery -A backend.tasks.celery_app worker --pool=solo --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      POSTGRES_HOST: timescaledb
+      POSTGRES_PORT: "5432"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_CELERY_BROKER_URL: redis://redis:6379/1
+      REDIS_CELERY_RESULT_BACKEND: redis://redis:6379/2
+      REDIS_CACHE_URL: redis://redis:6379/0
+    depends_on:
+      - timescaledb
+      - redis
+
+  beat:
+    <<: *app-image
+    container_name: stock_screener_beat
+    restart: unless-stopped
+    command: celery -A backend.tasks.celery_app beat --loglevel=info
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_CELERY_BROKER_URL: redis://redis:6379/1
+      REDIS_CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      - redis
+
+  flower:
+    <<: *app-image
+    container_name: stock_screener_flower
+    restart: unless-stopped
+    command: celery -A backend.tasks.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      REDIS_CELERY_BROKER_URL: redis://redis:6379/1
+      REDIS_CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      - redis
+
+  frontend:
+    <<: *app-image
+    container_name: stock_screener_frontend
+    restart: unless-stopped
+    command: streamlit run frontend/app.py --server.port=8501 --server.address=0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      API_BASE_URL: http://api:8000
+    depends_on:
+      - api
+
+volumes:
+  timescaledb_data:
+  redis_data:
+  pgadmin_data:
